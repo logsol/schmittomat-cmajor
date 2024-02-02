@@ -1,0 +1,182 @@
+// interface https://jsfiddle.net/cm9618de/1/
+
+graph Schmittomat [[ main ]]
+{
+    input stream float<2> in;
+    output stream float<2> out;
+    input event std::midi::Message midiIn;
+
+    input scaler.cutoff [[ name: "Cutoff",   min: 0, max: 1, init: 0.5]];
+    input scaler.resonance [[ name: "Resonance", min: 1.0, max: 10, init: 1]];
+    input scaler.filterModDepth [[name: "Filter Env", init: 0.0, min: -1.0, max: 1.0]];
+    input noiseGain.volume [[name: "Noise", unit: "dB", init: 0.0, min: -40, max: 0]];
+    input scaler.attack [[name: "Attack", unit: "s", init: 0.0, min: 0.01, max: 1.0]];
+    input scaler.release [[name: "Release", unit: "s", init: 0.0]];
+    input scaler.filterAttack [[name: "Filter Attack", unit: "s", init: 0.1, min: 0.01, max: 1.0]];
+    input scaler.filterRelease [[name: "Filter Release", unit: "s", init: 0.0]];
+
+    // Nodes
+    node filter = std::filters (float<2>)::tpt::svf::Processor;
+    node noiseGain = std::levels::SmoothedGain (float<2>, 0.2f); // smooth time in s
+    node oscillator = std::noise::White ();
+    node convertToStereo = std::mixers::MonoToStereo (float);
+    node gainEnv = Env (true);
+    node filterEnv = Env (false);
+    node cutoffEnvMod = Mod ();
+    node scaler = Scaler;
+
+    // Connections
+    connection
+    {
+        midiIn -> std::midi::MPEConverter -> gainEnv.eventIn, filterEnv.eventIn;
+
+        // Main params
+        scaler.noiseOut -> noiseGain.volume;
+
+        // Filter params
+        scaler.attackOut -> gainEnv.attack;
+        scaler.releaseOut -> gainEnv.release;
+        scaler.filterAttackOut -> filterEnv.attack;
+        scaler.filterReleaseOut -> filterEnv.release;
+        scaler.cutoffOut -> cutoffEnvMod.in;
+        scaler.resonanceOut -> filter.q;
+
+        // Filter modulation
+        filterEnv.gainOut -> cutoffEnvMod.modIn;
+        scaler.filterModDepthOut -> cutoffEnvMod.depth;
+        cutoffEnvMod.out -> filter.frequency;
+
+        // Audio routing
+        (oscillator.out * gainEnv.gainOut) -> convertToStereo -> noiseGain.in;
+        noiseGain.out -> filter.in;
+        (in * gainEnv.gainOut) -> filter.in;
+        filter.out -> out;
+    }
+}
+
+processor Mod () {
+    input stream float modIn;
+    input event float in;
+    input event float depth;
+
+    output event float out;
+
+    float mIn, mDepth; 
+
+    event in (float newValue) {
+        mIn = newValue;
+    }
+
+    event depth (float newValue) {
+        mDepth = newValue;
+    }
+
+    void main()
+    {
+        loop {
+            out <- (mIn + (modIn * mDepth * 10000));
+            advance();
+        }
+    }
+}
+
+processor Scaler
+{
+    input event float noise;
+    input event float cutoff;
+    input event float resonance;
+    input event float attack;
+    input event float release;
+    input event float filterAttack;
+    input event float filterRelease;
+    input event float filterModDepth;
+    
+    output event float noiseOut;
+    output event float cutoffOut;
+    output event float resonanceOut;
+    output event float attackOut;
+    output event float releaseOut;
+    output event float filterAttackOut;
+    output event float filterReleaseOut;
+    output event float filterModDepthOut;
+
+    event noise (float newValue) { noiseOut <- newValue * 1.0f; }
+    event cutoff (float newValue) { cutoffOut <- std::notes::noteToFrequency(12 + newValue * 127.0f) ; }
+    event resonance (float newValue) { resonanceOut <- newValue * 1.0f; }
+    event attack (float newValue) { attackOut <- newValue * 1.0f; }
+    event release (float newValue) { releaseOut <- newValue * 1.0f; }
+    event filterAttack (float newValue) { filterAttackOut <- newValue * 1.0f; }
+    event filterRelease (float newValue) { filterReleaseOut <- newValue * 1.0f; }
+    event filterModDepth (float newValue) { filterModDepthOut <- newValue * 1.0f; }
+}
+
+processor Env (bool hold)
+{
+    input event (std::notes::NoteOn, std::notes::NoteOff) eventIn;
+    input event float attack;
+    input event float release;
+
+    output stream float gainOut;
+
+    event attack(float newValue) {
+        attackSeconds = newValue;
+    }
+
+    event release(float newValue) {
+        releaseSeconds = newValue;
+    }
+
+    float keyDownVelocity, currentLevel, attackSeconds, releaseSeconds;
+
+    event eventIn (std::notes::NoteOn noteOn)        { keyDownVelocity = noteOn.velocity; }
+    event eventIn (std::notes::NoteOff noteOff)      { keyDownVelocity = 0; }
+
+    void main()
+    {
+        loop
+        {
+            while (keyDownVelocity == 0)
+                advance();
+
+            if (attackSeconds > 0)
+            {
+                let attackExponent = 1.0f / int32 (attackSeconds * float32 (processor.frequency));
+                let attackMultiplier = 2.0f ** -attackExponent
+                                        * (2.0f + keyDownVelocity) ** attackExponent;
+
+                while (currentLevel < keyDownVelocity)
+                {
+                    gainOut <- currentLevel;
+                    currentLevel = attackMultiplier * (currentLevel + 2.0f) - 2.0f;
+                    advance();
+                }
+
+                if (!hold && currentLevel >= keyDownVelocity) {
+                    keyDownVelocity = 0;
+                }
+            }
+            else
+            {
+                currentLevel = keyDownVelocity;
+            }
+
+            while (keyDownVelocity != 0)
+            {
+                gainOut <- currentLevel;
+                advance();
+            }
+
+            if (releaseSeconds > 0)
+            {
+                let decayFactor = std::intrinsics::pow (0.0001f, float32 (processor.period) / releaseSeconds);
+
+                while (keyDownVelocity == 0 && currentLevel > 0.0001f)
+                {
+                    gainOut <- currentLevel;
+                    currentLevel *= decayFactor;
+                    advance();
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,19 @@
+{
+    "CmajorVersion":    1,
+    "ID":               "dev.audiosalt.Schmittomat",
+    "version":          "1.0",
+    "name":             "Schmittomat",
+    "description":      "Schmittomat",
+    "category":         "fx",
+    "manufacturer":     "Audiosalt",
+    "isInstrument":     false,
+
+    "source":           "Schmittomat.cmajor",
+
+    "view": {
+        "src": "main.js",
+        "width": "420px",
+        "height": "300px",
+        "resizable": true
+    }
+}
