@@ -1,6 +1,6 @@
 # schmittomat-cmajor
 
-´´´
+```
 npm install
 
 npm run build
